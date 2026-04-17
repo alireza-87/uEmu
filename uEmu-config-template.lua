@@ -44,7 +44,7 @@ plugins = {}
 pluginsConfig = {}
 
 -- Include various convenient functions
-dofile('library.lua')
+dofile('{{ library_file }}')
 
 
 {% if loglevel == "debug" %}

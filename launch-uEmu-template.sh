@@ -10,7 +10,16 @@ uEmu_DIR="{{ root_dir }}"
 BUILD_DIR="$uEmu_DIR/build"
 BUILD=release
 INSTALL_DIR="$BUILD_DIR/libs2e-$BUILD/{{ qemu_arch }}-s2e-softmmu"
+INSTALL_SHARED_DIR="$BUILD_DIR/opt/share/libs2e"
 FIRMWARE="{{ firmware }}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+cd "$SCRIPT_DIR"
+if [ -d s2e-last ] && [ ! -L s2e-last ]; then
+  STALE_S2E_LAST="s2e-last.stale.$(date +%s)"
+  mv s2e-last "$STALE_S2E_LAST"
+  echo "Moved stale s2e-last directory to $STALE_S2E_LAST"
+fi
 
 # Comment this out to enable QEMU GUI
 GRAPHICS=-nographic
@@ -24,8 +33,12 @@ elif [ $1 ]; then
 fi
 
 export S2E_CONFIG=uEmu-config.lua
-export S2E_SHARED_DIR=$INSTALL_DIR
-export S2E_MAX_PROCESSES=1
+if [ -d "$INSTALL_DIR" ]; then
+    export S2E_SHARED_DIR=$INSTALL_DIR
+else
+    export S2E_SHARED_DIR=$INSTALL_SHARED_DIR
+fi
+export S2E_MAX_PROCESSES=${S2E_MAX_PROCESSES:-1}
 export S2E_UNBUFFERED_STREAM=1
 
 if [ $S2E_MAX_PROCESSES -gt 1 ]; then
@@ -33,6 +46,25 @@ if [ $S2E_MAX_PROCESSES -gt 1 ]; then
     # whatever settings were there before.
     export GRAPHICS=-nographic
 fi
+
+report_kb_artifacts() {
+    local kb_files
+
+    if [ -L s2e-last ] || [ -d s2e-last ]; then
+        kb_files="$(find s2e-last -maxdepth 1 -type f -name '*_KB.dat' | sort)"
+        if [ -n "$kb_files" ]; then
+            echo "KB files:"
+            printf '%s\n' "$kb_files"
+        else
+            echo "No *_KB.dat file found in $SCRIPT_DIR/s2e-last"
+            echo "Check logs:"
+            echo "  $SCRIPT_DIR/s2e-last/warnings.txt"
+            echo "  $SCRIPT_DIR/s2e-last/debug.txt"
+        fi
+    else
+        echo "No s2e-last output was created in $SCRIPT_DIR"
+    fi
+}
 
 if [ "x$DEBUG" != "x" ]; then
 
@@ -68,6 +100,7 @@ if [ "x$DEBUG" != "x" ]; then
         -k en-us $GRAPHICS -M mps2-ans2e -cpu cortex-m3 -m $QEMU_MEMORY -enable-kvm \
         -serial file:s2e-last/serial.txt $QEMU_EXTRA_FLAGS \
         -kernel $FIRMWARE
+    status=$?
 
 else
 
@@ -79,5 +112,9 @@ else
         -k en-us $GRAPHICS -M mps2-ans2e -cpu cortex-m3 -m $QEMU_MEMORY -enable-kvm \
         -serial file:s2e-last/serial.txt $QEMU_EXTRA_FLAGS \
         -kernel $FIRMWARE
+    status=$?
 
 fi
+
+report_kb_artifacts
+exit $status

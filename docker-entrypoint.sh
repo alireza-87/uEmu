@@ -10,6 +10,7 @@
 #       --seed  SEED_FILE        (optional – initial AFL seed; random 4 bytes if omitted)
 #       --testcase  TC_FILE      (optional – single testcase; no AFL launched)
 #       --workdir   /work        (optional – override mount point, default /work)
+#       --run-dir  /work/run     (optional – generated files and runtime output)
 #       --debug                  (optional – verbose uEmu log)
 #
 # Multi-instance fuzzing example (bind each container to its own CPU set):
@@ -26,6 +27,8 @@ set -e
 
 UEMU_TOOLS_DIR="${UEMU_TOOLS_DIR:-/uemu-tools}"
 WORK_DIR="${WORK_DIR:-/work}"
+RUN_DIR="${UEMU_RUN_DIR:-}"
+UEMU_RUNTIME_LIB_PATH="${UEMU_RUNTIME_LIB_PATH:-/uemu/build/opt/lib}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 ELF=""
@@ -48,6 +51,7 @@ while [[ $# -gt 0 ]]; do
         --seed|-s)      SEED="$2";      shift 2 ;;
         --testcase|-t)  TESTCASE="$2";  shift 2 ;;
         --workdir|-w)   WORK_DIR="$2";  shift 2 ;;
+        --run-dir|-r)   RUN_DIR="$2";   shift 2 ;;
         --debug)        DEBUG="--debug"; shift  ;;
         -h|--help)      usage ;;
         *) echo "[entrypoint] Unknown option: $1"; usage ;;
@@ -71,6 +75,11 @@ CFG_ABS="$(abs_path "$CFG")"
 [[ -n "$KB"       ]] && KB_ABS="$(abs_path "$KB")"
 [[ -n "$SEED"     ]] && SEED_ABS="$(abs_path "$SEED")"
 [[ -n "$TESTCASE" ]] && TESTCASE_ABS="$(abs_path "$TESTCASE")"
+if [[ -n "$RUN_DIR" ]]; then
+    RUN_DIR_ABS="$(abs_path "$RUN_DIR")"
+else
+    RUN_DIR_ABS="$WORK_DIR/run"
+fi
 
 # ── Validate inputs ───────────────────────────────────────────────────────────
 [[ -f "$ELF_ABS" ]] || { echo "[entrypoint] ERROR: ELF not found: $ELF_ABS"; exit 1; }
@@ -80,18 +89,15 @@ CFG_ABS="$(abs_path "$CFG")"
 [[ -n "$TESTCASE_ABS" && ! -f "$TESTCASE_ABS" ]] && { echo "[entrypoint] ERROR: testcase not found: $TESTCASE_ABS"; exit 1; }
 
 # ── Prepare working directory ─────────────────────────────────────────────────
+mkdir -p "$WORK_DIR"
+mkdir -p "$RUN_DIR_ABS"
 cd "$WORK_DIR"
-
-# uEmu-helper.py uses os.getcwd() to locate Jinja templates, so we copy them.
-cp "$UEMU_TOOLS_DIR/launch-uEmu-template.sh"  .
-cp "$UEMU_TOOLS_DIR/launch-AFL-template.sh"   .
-cp "$UEMU_TOOLS_DIR/uEmu-config-template.lua" .
-cp "$UEMU_TOOLS_DIR/library.lua"              .
 
 # ── AFL system tuning (best-effort; host sysctl takes precedence) ─────────────
 export AFL_SKIP_CPUFREQ="${AFL_SKIP_CPUFREQ:-1}"
 export AFL_NO_AFFINITY="${AFL_NO_AFFINITY:-1}"
 export AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES="${AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES:-1}"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$UEMU_RUNTIME_LIB_PATH"
 # S2E_MAX_PROCESSES is always 1 regardless of what the caller passes.
 # Docker-level parallelism (one container per firmware) is the right model.
 # Multi-process S2E inside a container degrades KB quality and causes premature
@@ -99,32 +105,32 @@ export AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES="${AFL_I_DONT_CARE_ABOUT_MISSING_CR
 export S2E_MAX_PROCESSES=1
 
 # ── Build uEmu-helper.py argument list ───────────────────────────────────────
-# firmware arg must be basename only — the helper embeds it into FUZZ_IN/OUT
-# paths and the FIRMWARE variable. QEMU resolves it relative to /work (cwd).
-# Config, KB, seed, testcase need absolute paths for the helper to find them.
-HELPER_ARGS=("$(basename "$ELF_ABS")" "$CFG_ABS")
+# Firmware, config, KB, seed, testcase are passed as absolute paths so the
+# generated run directory can live anywhere under /work without path breakage.
+HELPER_ARGS=("$ELF_ABS" "$CFG_ABS" "-o" "$RUN_DIR_ABS")
 [[ -n "$KB_ABS"       ]] && HELPER_ARGS+=("-kb" "$KB_ABS")
-[[ -n "$SEED_ABS"     ]] && HELPER_ARGS+=("-s"  "$(basename "$SEED_ABS")")
-[[ -n "$TESTCASE_ABS" ]] && HELPER_ARGS+=("-t"  "$(basename "$TESTCASE_ABS")")
+[[ -n "$SEED_ABS"     ]] && HELPER_ARGS+=("-s"  "$SEED_ABS")
+[[ -n "$TESTCASE_ABS" ]] && HELPER_ARGS+=("-t"  "$TESTCASE_ABS")
 [[ -n "$DEBUG"        ]] && HELPER_ARGS+=("--debug")
 
 echo "[entrypoint] Generating launch scripts..."
 python3 "$UEMU_TOOLS_DIR/uEmu-helper.py" "${HELPER_ARGS[@]}"
+echo "[entrypoint] Run directory: $RUN_DIR_ABS"
 
 # ── Launch ────────────────────────────────────────────────────────────────────
 if [[ -n "$KB_ABS" && -z "$TESTCASE_ABS" ]]; then
     # Fuzzing mode: AFL feeds inputs, uEmu consumes them.
     echo "[entrypoint] Mode: FUZZING  (AFL + uEmu)"
-    ./launch-AFL.sh &
+    "$RUN_DIR_ABS/launch-AFL.sh" &
     AFL_PID=$!
     trap 'kill "$AFL_PID" 2>/dev/null; wait "$AFL_PID" 2>/dev/null' EXIT
-    ./launch-uEmu.sh
+    "$RUN_DIR_ABS/launch-uEmu.sh"
 elif [[ -n "$TESTCASE_ABS" ]]; then
     # Single testcase analysis: uEmu only.
     echo "[entrypoint] Mode: TESTCASE ANALYSIS  (uEmu only)"
-    ./launch-uEmu.sh
+    "$RUN_DIR_ABS/launch-uEmu.sh"
 else
     # KB extraction: uEmu only.
     echo "[entrypoint] Mode: KB EXTRACTION  (uEmu only)"
-    ./launch-uEmu.sh
+    "$RUN_DIR_ABS/launch-uEmu.sh"
 fi

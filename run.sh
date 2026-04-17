@@ -55,6 +55,30 @@ ask_file_in_dir() {
     fi
 }
 
+ask_file_recursive() {
+    # ask_file_recursive <var_name> <dir> <glob> <label>
+    local var="$1" dir="$2" glob="$3" label="$4"
+    local -a found
+    mapfile -t found < <(find "$dir" -name "$glob" 2>/dev/null | sort)
+    if [[ ${#found[@]} -eq 1 ]]; then
+        printf -v "$var" '%s' "$(realpath --relative-to="$dir" "${found[0]}")"
+        echo "  Auto-detected $label: $(realpath --relative-to="$dir" "${found[0]}")"
+    elif [[ ${#found[@]} -gt 1 ]]; then
+        echo "  Multiple ${label}s found:"
+        for i in "${!found[@]}"; do
+            echo "    $((i+1))) $(realpath --relative-to="$dir" "${found[$i]}")"
+        done
+        local choice
+        ask choice "  Pick number" "1"
+        printf -v "$var" '%s' "$(realpath --relative-to="$dir" "${found[$((choice-1))]}")"
+    else
+        red "  No $glob file found under $dir."
+        local fname
+        ask fname "  Enter $label filename manually"
+        printf -v "$var" '%s' "$fname"
+    fi
+}
+
 check_kvm() {
     [[ -e /dev/kvm ]] || { red "WARNING: /dev/kvm not found — KVM will not be available."; }
 }
@@ -74,6 +98,7 @@ run_container() {
     cmd+=" --user \"$(id -u):$(id -g)\""
     cmd+=" -e \"LD_LIBRARY_PATH=$UEMU_RUNTIME_LIB_PATH\""
     cmd+=" -v \"$(realpath "$workdir"):/work\""
+    cmd+=" -v \"$UEMU_HELPER_DIR/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro\""
     cmd+=" -v \"$UEMU_HELPER_DIR/uEmu-helper.py:/uemu-tools/uEmu-helper.py:ro\""
     cmd+=" -v \"$UEMU_HELPER_DIR/launch-uEmu-template.sh:/uemu-tools/launch-uEmu-template.sh:ro\""
     cmd+=" -v \"$UEMU_HELPER_DIR/launch-AFL-template.sh:/uemu-tools/launch-AFL-template.sh:ro\""
@@ -135,7 +160,7 @@ mode_fuzzing() {
     cyan "\n── Fuzzing ──"
     get_common_inputs
 
-    ask_file_in_dir KB_FILE "$WORK_DIR" "*_KB.dat" "KB file"
+    ask_file_recursive KB_FILE "$WORK_DIR" "*_KB.dat" "KB file"
 
     local seed_flag=""
     ask_optional SEED_FILE "Seed file (inside work dir)"
@@ -151,8 +176,8 @@ mode_testcase() {
     cyan "\n── Single Testcase Analysis ──"
     get_common_inputs
 
-    ask_file_in_dir KB_FILE   "$WORK_DIR" "*_KB.dat" "KB file"
-    ask_file_in_dir TC_FILE   "$WORK_DIR" "*"        "testcase file"
+    ask_file_recursive KB_FILE "$WORK_DIR" "*_KB.dat" "KB file"
+    ask_file_recursive TC_FILE "$WORK_DIR" "*" "testcase file"
 
     local args="--elf $ELF_FILE --cfg $CFG_FILE --kb $KB_FILE --testcase $TC_FILE"
     check_kvm
@@ -240,9 +265,10 @@ mode_multi_firmware() {
             --cpuset-cpus="$cpuset" \
             --user "$(id -u):$(id -g)" \
             --name "uemu_kb_${name}" \
-            -e "LD_LIBRARY_PATH=$UEMU_RUNTIME_LIB_PATH" \
+            -e LD_LIBRARY_PATH="$UEMU_RUNTIME_LIB_PATH" \
             -e S2E_MAX_PROCESSES="$cores_each" \
             -v "${subdir}:/work" \
+            -v "$UEMU_HELPER_DIR/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro" \
             -v "$UEMU_HELPER_DIR/uEmu-helper.py:/uemu-tools/uEmu-helper.py:ro" \
             -v "$UEMU_HELPER_DIR/launch-uEmu-template.sh:/uemu-tools/launch-uEmu-template.sh:ro" \
             -v "$UEMU_HELPER_DIR/launch-AFL-template.sh:/uemu-tools/launch-AFL-template.sh:ro" \
@@ -265,7 +291,7 @@ mode_multi_firmware() {
         kb_file="$(basename "$kb_file")"
 
         # ── Step 3: clean stale AFL output so afl-fuzz doesn't refuse to start ──
-        rm -rf "$subdir/AFL"
+        rm -rf "$subdir/run/AFL"
 
         # ── Step 4: start fuzzer (detached) ──
         local seed_flag=""
@@ -277,9 +303,10 @@ mode_multi_firmware() {
             --cpuset-cpus="$cpuset" \
             --user "$(id -u):$(id -g)" \
             --name "uemu_fuzz_${name}" \
-            -e "LD_LIBRARY_PATH=$UEMU_RUNTIME_LIB_PATH" \
+            -e LD_LIBRARY_PATH="$UEMU_RUNTIME_LIB_PATH" \
             -e S2E_MAX_PROCESSES="$cores_each" \
             -v "${subdir}:/work" \
+            -v "$UEMU_HELPER_DIR/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro" \
             -v "$UEMU_HELPER_DIR/uEmu-helper.py:/uemu-tools/uEmu-helper.py:ro" \
             -v "$UEMU_HELPER_DIR/launch-uEmu-template.sh:/uemu-tools/launch-uEmu-template.sh:ro" \
             -v "$UEMU_HELPER_DIR/launch-AFL-template.sh:/uemu-tools/launch-AFL-template.sh:ro" \

@@ -10,11 +10,19 @@ import struct
 import configparser
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-DEFAULT_TEMPLATES_DIR = os.getcwd()
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_TEMPLATES_DIR = SCRIPT_DIR
+
+
+def ensure_dir(path):
+    if path and not os.path.isdir(path):
+        os.makedirs(path)
+
+
 def read_config(cfg_f, mode, cachefilename, firmwarename, debug, testcasename):
     if not os.path.isfile(cfg_f):
         sys.exit("Cannot find the specified configuration file: %s" % cfg_f)
-    parser = configparser.SafeConfigParser()
+    parser = configparser.ConfigParser()
     parser.read(cfg_f)
 
     # Prepare the target firmware lua configuration
@@ -23,6 +31,7 @@ def read_config(cfg_f, mode, cachefilename, firmwarename, debug, testcasename):
         'creation_time': str(datetime.datetime.now()),
         'firmware_name': firmwarename,
         'pwd': str(os.getcwd()),
+        'library_file': os.path.join(SCRIPT_DIR, 'library.lua'),
         # Configure the uEmu is in fuzzing(true) phase or KB(false) extraction phase
         'mode': "true" if mode else "false",
 		'klee_info': "false" if mode else "true",
@@ -107,6 +116,7 @@ def render_template(context, template, output_path, templates_dir=None,
     rendered_data = '\n'.join(cleaned_lines)
 
     if output_path:
+        ensure_dir(os.path.dirname(output_path))
         with open(output_path, 'w') as f:
             f.write(rendered_data)
 
@@ -130,6 +140,8 @@ def main(argv):
                             help="Configure the fuzzing seed filename used for AFL fuzzer")
     parser.add_argument("-t", "--testcasefilename", type=str, default="",
                             help="Configure the testcase filename used for dynamic analysis")
+    parser.add_argument("-o", "--output-dir", type=str, default=".",
+                            help="Directory where generated configs, launch scripts, KB files, and run artifacts will live")
 
     args = parser.parse_args()
 
@@ -137,6 +149,11 @@ def main(argv):
         args.config = os.path.abspath(args.config)
     else:
         sys.exit("Please set configuration .cfg file!")
+
+    args.firmware = os.path.abspath(args.firmware)
+
+    output_dir = os.path.abspath(args.output_dir)
+    ensure_dir(output_dir)
 
     if args.KBfilename == "":
         if args.debug:
@@ -152,30 +169,31 @@ def main(argv):
                 for num in range(0,4):
                     randomseed = random.randint(0,127)
                     list_random.append(randomseed)
-                with open('testcase', 'wb') as f:
+                seedfilename = os.path.join(output_dir, 'testcase')
+                with open(seedfilename, 'wb') as f:
                     for r in list_random:
                         rd = struct.pack('B', r)
                         f.write(rd)
-                seedfilename = 'testcase'
                 print("Random initial seed %d %d %d %d will be used in dynamic analysis (fuzzing) phase." % (list_random[0], list_random[1], list_random[2], list_random[3]))
             else:
-                seedfilename = args.seedfilename
+                seedfilename = os.path.abspath(args.seedfilename)
                 print("uEmu will use manual seed file %s in dynamic analysis (fuzzing) phase." % (args.seedfilename))
             afl = {
                 'creation_time': str(datetime.datetime.now()),
                 'firmware': args.firmware,
                 'seed': seedfilename,
             }
-            render_template(afl, "launch-AFL-template.sh", "launch-AFL.sh", executable=True)
+            render_template(afl, "launch-AFL-template.sh", os.path.join(output_dir, "launch-AFL.sh"), executable=True)
             if args.debug:
                 print("%s firmware has been configured using uEmu in dynamic analysis (fuzzing) phase with debug level log." % (args.firmware))
             else:
                 print("%s firmware has been configured using uEmu in dynamic analysis (fuzzing) phase with info level log." % (args.firmware))
             print("Next please first run launch-AFL.sh in one shell and use another shell to run launch-uEmu.sh.")
         else:
+           args.testcasefilename = os.path.abspath(args.testcasefilename)
            print("uEmu will use %s file as input for dynamic analysis and will automatically exit when whole testcase has been consumed." % (args.testcasefilename));
     config = read_config(args.config, mode, args.KBfilename, args.firmware, args.debug, args.testcasefilename)
-    render_template(config, "uEmu-config-template.lua", "uEmu-config.lua")
+    render_template(config, "uEmu-config-template.lua", os.path.join(output_dir, "uEmu-config.lua"))
     launch = {
         'creation_time': str(datetime.datetime.now()),
         'qemu_arch':"arm",
@@ -183,7 +201,7 @@ def main(argv):
         'firmware': args.firmware,
         'root_dir': os.environ['uEmuDIR'],
     }
-    render_template(launch, "launch-uEmu-template.sh", "launch-uEmu.sh", executable=True)
+    render_template(launch, "launch-uEmu-template.sh", os.path.join(output_dir, "launch-uEmu.sh"), executable=True)
 
 
 if __name__ == "__main__":

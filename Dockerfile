@@ -5,8 +5,7 @@ ENV uEmuDIR=/uemu
 
 # ── Build dependencies (mirrors vagrant-bootstrap.sh) ─────────────────────────
 # gcc-9 is not in 18.04 default repos — add the toolchain PPA first
-RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|http://mirrors.edge.kernel.org/ubuntu/|g' /etc/apt/sources.list && \
-    dpkg --add-architecture i386 && \
+RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y software-properties-common && \
     add-apt-repository -y ppa:ubuntu-toolchain-r/test && \

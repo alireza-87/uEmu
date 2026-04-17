@@ -10,6 +10,9 @@ FIRMWARE="{{ firmware }}"
 FUZZ_IN="AFL/{{ firmware }}_fuzz_in"
 FUZZ_OUT="AFL/{{ firmware }}_fuzz_out"
 SEED_FILE="{{ seed }}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+cd "$SCRIPT_DIR"
 if [ ! -d $FUZZ_IN ];then
 	mkdir -p $FUZZ_IN
 	cp -i $SEED_FILE $FUZZ_IN
