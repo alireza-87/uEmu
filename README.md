@@ -56,6 +56,99 @@ Now, from inside the virtual machine, you have the contents of this repository a
 
 **Note**: The VM is configured to use 4 cores and 4096 MB of RAM. You can change this by modifying the Vagrant file.
 
+## Quick Start for Docker and Vagrant
+
+The repository now keeps runtime files out of the shared project root:
+
+- Docker default run directory: `/work/run`
+- Vagrant default run directory: `/home/vagrant/runs/$HOSTNAME`
+- KB files are written under `s2e-out-*`
+- AFL input/output is written under `AFL/`
+
+### Docker
+
+Build the image from this repository:
+
+```bash
+./build.sh
+```
+
+Then use either the interactive runner:
+
+```bash
+./run.sh
+```
+
+or call the container directly for KB extraction:
+
+```bash
+docker run --rm -it --device /dev/kvm -v "$PWD:/work" uemu \
+  --elf firmware.elf --cfg firmware.cfg
+```
+
+That generates launch/config files under `./run` and writes KB output under
+`./run/s2e-out-*`.
+
+To start fuzzing with an existing KB:
+
+```bash
+docker run --rm -it --device /dev/kvm -v "$PWD:/work" uemu \
+  --elf firmware.elf --cfg firmware.cfg \
+  --kb run/s2e-out-0/firmware.elf-round1-stateX-tbnumY_KB.dat
+```
+
+In fuzzing mode, the container starts both AFL and μEmu. AFL results are stored
+under `./run/AFL`.
+
+### Vagrant
+
+Build the prebuilt base box once:
+
+```bash
+./build-base-box.sh
+```
+
+Start worker VMs:
+
+```bash
+UEMU_ROLE=worker UEMU_VM_COUNT=21 UEMU_VM_CPUS=1 vagrant up
+```
+
+Connect to a worker:
+
+```bash
+vagrant ssh t1
+```
+
+Inside the worker, run KB extraction with the wrapper:
+
+```bash
+cd /vagrant
+uEmuDIR=/home/vagrant/uemu ./vm-uEmu.sh /vagrant/path/to/firmware.elf /vagrant/path/to/firmware.cfg
+/home/vagrant/runs/$(hostname)/launch-uEmu.sh
+```
+
+To find the generated KB:
+
+```bash
+find /home/vagrant/runs/$(hostname) -maxdepth 2 -type f -name '*_KB.dat'
+```
+
+Then start fuzzing with that KB:
+
+```bash
+cd /vagrant
+uEmuDIR=/home/vagrant/uemu ./vm-uEmu.sh \
+  /vagrant/path/to/firmware.elf \
+  /vagrant/path/to/firmware.cfg \
+  -kb /home/vagrant/runs/$(hostname)/s2e-out-0/firmware.elf-round1-stateX-tbnumY_KB.dat
+/home/vagrant/runs/$(hostname)/launch-AFL.sh
+/home/vagrant/runs/$(hostname)/launch-uEmu.sh
+```
+
+If you want a different per-VM output path, use `--run-dir DIR` with
+`vm-uEmu.sh`.
+
 ## Source Code Installation
 
 **Note**:
@@ -122,9 +215,11 @@ the corresponding files from the ``stamps`` subdirectory.
 All  μEmu plugins are enabled and configured with Lua-based configuration file `uEmu-config.lua`.
 To provide user a more user-friendly configuration file, we provide python script named `uEmu-helper.py` to quickly generate Lua-base configure files based on template file `uEmu-config-template.lua`  based on a sample user-defined CFG file.
 
-It will also generate launch scripts to run μEmu and AFL fuzzer based on `launch-uEmu-template.sh` and `launch-AFL-template.sh` files. 
+It will also generate launch scripts to run μEmu and AFL fuzzer based on `launch-uEmu-template.sh` and `launch-AFL-template.sh` files.
 
-Please make sure the `launch-uEmu-template.sh`, `launch-AFL-template.sh`, `uEmu-config-template.lua` and `library.lua` exist and place in the same path e.g., <proj_dir>  with `uEmu-helper.py`.
+`uEmu-helper.py` loads its templates from the repository directory where the
+helper script lives. Use `-o/--output-dir` if you want the generated files and
+runtime output to go into a dedicated run directory.
 
 
 
@@ -143,7 +238,7 @@ Here, we take `WYCNINWYC.elf` firmware as a example to show how to run the μEmu
 
 
 ```bash
-Usage: python3 <repo_path>/uEmu-helper.py <firmware_name> <config_file_name>  [-h] [--debug]
+Usage: python3 <repo_path>/uEmu-helper.py <firmware_name> <config_file_name>  [-o OUTPUT_DIR] [-h] [--debug]
 ```
 
 - arguments:
@@ -154,12 +249,23 @@ Usage: python3 <repo_path>/uEmu-helper.py <firmware_name> <config_file_name>  [-
 
 **Example**:
 ```console
-python3 <repo_path>/uEmu-helper.py <proj_dir>/WYCINWYC.elf <proj_dir>/WYCNINWYC.cfg
+python3 <repo_path>/uEmu-helper.py <proj_dir>/WYCINWYC.elf <proj_dir>/WYCNINWYC.cfg -o <run_dir>
 ```
 
-After the above command successfully finishes,  you could find the `launch-uEmu.sh` and `uEmu-config.lua` in your <proj_dir>. Then, you can launch the first-round KB extraction via **carrying out the `launch-uEmu.sh` script** and you can verify `uEmu-config.lua` to know whether you configurations are actually as your excepted . 
+After the above command successfully finishes, you can find the generated
+`launch-uEmu.sh` and `uEmu-config.lua` in `<run_dir>` (or in the current
+directory if `-o` is not used). Then, you can launch the first-round KB
+extraction via **carrying out the `launch-uEmu.sh` script** and verify
+`uEmu-config.lua` to confirm your configuration.
 
-After finishing (typically a few minutes), you can find log files and knowledge base (KB) file named as `firmwarename-roundnumber-finalstatenumber-unqiuebbnumber_KB.dat` (e.g., `WYCINWYC.elf-round1-state53-bbnum1069_KB.dat`) in `s2e-last` (referring to the `s2e-out-<max>`) folder. Detail logs will be printed to `s2e-last/debug.txt` and important log information will be printed to`s2e-last/warnings.txt` . More detail about log files please refer to [S2E documents](http://s2e.systems/docs/index.html) .
+After finishing (typically a few minutes), you can find log files and the
+knowledge base (KB) file named as
+`firmwarename-roundnumber-finalstatenumber-unqiuebbnumber_KB.dat` (e.g.,
+`WYCINWYC.elf-round1-state53-bbnum1069_KB.dat`) under `s2e-out-*`. `s2e-last`
+points to the latest output directory. Detail logs are printed to
+`s2e-last/debug.txt` and important log information is printed to
+`s2e-last/warnings.txt`. More detail about log files please refer to
+[S2E documents](http://s2e.systems/docs/index.html).
 
 **NOTE**:
 
@@ -186,8 +292,12 @@ The below command is to configure μEmu for running `WYCINWYC.elf` firmware in d
 ```console
 python3 uEmu-helper.py WYCINWYC.elf WYCNINWYC.cfg -kb WYCINWYC.elf-round1-state53-tbnum1069_KB.dat -s small_document.xml
 ```
-Since μEmu relies on AFL for fuzzing input. Thus, you first need to launch AFL fuzzur via `./launch-AFL.sh` in **one terminal** to input test-cases and then launch μEmu via `./launch-uEmu.sh` in **another terminal** to consume the test-cases.
-The fuzzing results is stored in <proj_dir>/<firmware> folder. The log and KB files of addition round KB extraction phase are record in <s2e-last> folder.
+Since μEmu relies on AFL for fuzzing input, you first need to launch AFL via
+`./launch-AFL.sh` in **one terminal** to provide testcases and then launch μEmu
+via `./launch-uEmu.sh` in **another terminal** to consume them. AFL input and
+output are stored under `AFL/` in the selected run directory. The log and KB
+files of additional KB extraction rounds are recorded under `s2e-out-*`
+(`s2e-last` points to the latest one).
 
 **NOTE**:
 1. Please abort fuzzing from AFL terminal, and then μEmu will automatically terminate.
