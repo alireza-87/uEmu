@@ -137,6 +137,27 @@ arch_header_pkg() {
     esac
 }
 
+install_vagrant_ubuntu_fallback() {
+    if have_cmd vagrant; then
+        return 0
+    fi
+
+    log "Installing Vagrant from the official HashiCorp APT repository"
+    run_sudo install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://apt.releases.hashicorp.com/gpg | \
+        run_sudo gpg --dearmor -o /etc/apt/keyrings/hashicorp-archive-keyring.gpg
+
+    local codename
+    codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+    [[ -n "$codename" ]] || die "Could not determine Ubuntu codename for HashiCorp repo"
+
+    printf 'deb [signed-by=/etc/apt/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com %s main\n' "$codename" | \
+        run_sudo tee /etc/apt/sources.list.d/hashicorp.list >/dev/null
+
+    run_sudo apt-get update
+    run_sudo apt-get install -y vagrant
+}
+
 install_ubuntu() {
     local kernel_headers="linux-headers-$(uname -r)"
     local -a common_pkgs=(
@@ -160,10 +181,18 @@ install_ubuntu() {
     fi
 
     if [[ "$MODE" != "docker" ]]; then
-        vagrant_pkgs+=(vagrant virtualbox virtualbox-dkms "$kernel_headers")
+        vagrant_pkgs+=(virtualbox virtualbox-dkms "$kernel_headers")
     fi
 
     apt_install_if_available "${common_pkgs[@]}" "${docker_pkgs[@]}" "${vagrant_pkgs[@]}"
+
+    if [[ "$MODE" != "docker" ]]; then
+        if apt_pkg_available vagrant; then
+            apt_install_if_available vagrant
+        else
+            install_vagrant_ubuntu_fallback
+        fi
+    fi
 }
 
 install_arch() {
@@ -226,6 +255,17 @@ enable_post_install() {
     fi
 }
 
+verify_install() {
+    if [[ "$MODE" != "vagrant" ]] && ! have_cmd docker; then
+        die "docker is still not installed or not on PATH"
+    fi
+
+    if [[ "$MODE" != "docker" ]]; then
+        have_cmd vagrant || die "vagrant is still not installed or not on PATH"
+        have_cmd VBoxManage || warn "VBoxManage is not on PATH yet; a reboot or re-login may be required"
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --docker-only)
@@ -276,6 +316,7 @@ case "${ID:-}" in
 esac
 
 enable_post_install
+verify_install
 
 cat <<EOF
 
@@ -285,7 +326,8 @@ Next steps:
   Docker build:   ./build.sh
   Docker run:     ./run.sh
   Vagrant build:  ./build-base-box.sh
-  Vagrant worker: UEMU_ROLE=worker UEMU_VM_COUNT=21 UEMU_VM_CPUS=1 vagrant up
+  Vagrant worker: ./up-workers.sh
+  Manual worker:  UEMU_ROLE=worker UEMU_VM_COUNT=21 UEMU_VM_CPUS=1 vagrant up
 
 Notes:
   - If docker or vboxusers group membership changed, log out and back in.
