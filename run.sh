@@ -258,8 +258,10 @@ mode_multi_firmware() {
         local kvm_flag=""
         [[ -e /dev/kvm ]] && kvm_flag="--device /dev/kvm"
 
+        docker rm -f "uemu_kb_${name}" "uemu_fuzz_${name}" >/dev/null 2>&1 || true
+
         # ── Step 1: KB extraction (foreground, wait for completion) ──
-        echo "[${name}] Starting KB extraction  cores=${cpuset}  S2E_MAX_PROCESSES=${cores_each}"
+        echo "[${name}] Starting KB extraction  cores=${cpuset}"
         docker run --rm \
             $kvm_flag \
             --cpuset-cpus="$cpuset" \
@@ -297,10 +299,11 @@ mode_multi_firmware() {
         local seed_flag=""
         [[ -n "$SEED_FILE" ]] && seed_flag="--seed $SEED_FILE"
 
-        echo "[${name}] Starting fuzzer  cores=${cpuset}  S2E_MAX_PROCESSES=${cores_each}"
-        docker run --rm -d \
+        echo "[${name}] Starting fuzzer  cores=${cpuset}"
+        docker run -d \
             $kvm_flag \
             --cpuset-cpus="$cpuset" \
+            --restart on-failure:3 \
             --user "$(id -u):$(id -g)" \
             --name "uemu_fuzz_${name}" \
             -e LD_LIBRARY_PATH="$UEMU_RUNTIME_LIB_PATH" \

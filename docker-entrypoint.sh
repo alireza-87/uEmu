@@ -29,6 +29,11 @@ UEMU_TOOLS_DIR="${UEMU_TOOLS_DIR:-/uemu-tools}"
 WORK_DIR="${WORK_DIR:-/work}"
 RUN_DIR="${UEMU_RUN_DIR:-}"
 UEMU_RUNTIME_LIB_PATH="${UEMU_RUNTIME_LIB_PATH:-/uemu/build/opt/lib}"
+UEMU_FUZZ_MAX_RESTARTS="${UEMU_FUZZ_MAX_RESTARTS:-10}"
+UEMU_FUZZ_RESTART_DELAY_SECS="${UEMU_FUZZ_RESTART_DELAY_SECS:-2}"
+UEMU_FUZZ_QUICK_FAILURE_SECS="${UEMU_FUZZ_QUICK_FAILURE_SECS:-15}"
+UEMU_FUZZ_MAX_QUICK_FAILURES="${UEMU_FUZZ_MAX_QUICK_FAILURES:-3}"
+AFL_PID=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 ELF=""
@@ -41,6 +46,64 @@ DEBUG=""
 usage() {
     grep '^#' "$0" | sed 's/^# \?//'
     exit 1
+}
+
+cleanup() {
+    local status=$?
+
+    if [[ -n "$AFL_PID" ]] && kill -0 "$AFL_PID" 2>/dev/null; then
+        kill "$AFL_PID" 2>/dev/null || true
+        wait "$AFL_PID" 2>/dev/null || true
+    fi
+
+    return "$status"
+}
+
+run_uemu_supervised() {
+    local restart_count=0
+    local quick_failures=0
+
+    while true; do
+        local started_at status runtime
+
+        if ! kill -0 "$AFL_PID" 2>/dev/null; then
+            wait "$AFL_PID"
+            return $?
+        fi
+
+        started_at="$(date +%s)"
+        set +e
+        "$RUN_DIR_ABS/launch-uEmu.sh"
+        status=$?
+        set -e
+        runtime=$(( $(date +%s) - started_at ))
+
+        if ! kill -0 "$AFL_PID" 2>/dev/null; then
+            wait "$AFL_PID" 2>/dev/null || true
+            return "$status"
+        fi
+
+        restart_count=$((restart_count + 1))
+        if (( runtime < UEMU_FUZZ_QUICK_FAILURE_SECS )); then
+            quick_failures=$((quick_failures + 1))
+        else
+            quick_failures=0
+        fi
+
+        echo "[entrypoint] uEmu exited with status ${status} after ${runtime}s; restarting (${restart_count}/${UEMU_FUZZ_MAX_RESTARTS}, quick failures ${quick_failures}/${UEMU_FUZZ_MAX_QUICK_FAILURES})"
+
+        if (( restart_count > UEMU_FUZZ_MAX_RESTARTS )); then
+            echo "[entrypoint] Restart limit reached; stopping container."
+            return "$status"
+        fi
+
+        if (( quick_failures > UEMU_FUZZ_MAX_QUICK_FAILURES )); then
+            echo "[entrypoint] Too many quick uEmu failures; stopping container."
+            return "$status"
+        fi
+
+        sleep "$UEMU_FUZZ_RESTART_DELAY_SECS"
+    done
 }
 
 while [[ $# -gt 0 ]]; do
@@ -121,10 +184,11 @@ echo "[entrypoint] Run directory: $RUN_DIR_ABS"
 if [[ -n "$KB_ABS" && -z "$TESTCASE_ABS" ]]; then
     # Fuzzing mode: AFL feeds inputs, uEmu consumes them.
     echo "[entrypoint] Mode: FUZZING  (AFL + uEmu)"
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM
     "$RUN_DIR_ABS/launch-AFL.sh" &
     AFL_PID=$!
-    trap 'kill "$AFL_PID" 2>/dev/null; wait "$AFL_PID" 2>/dev/null' EXIT
-    "$RUN_DIR_ABS/launch-uEmu.sh"
+    run_uemu_supervised
 elif [[ -n "$TESTCASE_ABS" ]]; then
     # Single testcase analysis: uEmu only.
     echo "[entrypoint] Mode: TESTCASE ANALYSIS  (uEmu only)"

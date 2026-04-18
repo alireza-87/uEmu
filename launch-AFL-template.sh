@@ -7,21 +7,22 @@
 #
 
 FIRMWARE="{{ firmware }}"
-FUZZ_IN="AFL/{{ firmware }}_fuzz_in"
-FUZZ_OUT="AFL/{{ firmware }}_fuzz_out"
+FIRMWARE_LABEL="{{ firmware_label }}"
+FUZZ_IN="AFL/${FIRMWARE_LABEL}_fuzz_in"
+FUZZ_OUT="AFL/${FIRMWARE_LABEL}_fuzz_out"
 SEED_FILE="{{ seed }}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 cd "$SCRIPT_DIR"
-if [ ! -d $FUZZ_IN ];then
-	mkdir -p $FUZZ_IN
-	cp -i $SEED_FILE $FUZZ_IN
+mkdir -p "$FUZZ_IN"
+if [ ! -f "$FUZZ_IN/$(basename -- "$SEED_FILE")" ]; then
+	cp -f "$SEED_FILE" "$FUZZ_IN/"
 fi
 
-
-if [ ! -d $FUZZ_OUT ];then
-	mkdir -p $FUZZ_OUT
+if [ ! -d "$FUZZ_OUT" ]; then
+	mkdir -p "$FUZZ_OUT"
 else
-	echo "You need to rm $FUZZ_OUT first"
+	echo "Reusing existing AFL output directory $FUZZ_OUT"
 fi
-	afl-fuzz -i $FUZZ_IN -o $FUZZ_OUT -t 100000 uEmu
+
+exec afl-fuzz -i "$FUZZ_IN" -o "$FUZZ_OUT" -t 100000 uEmu

@@ -181,6 +181,7 @@ def main(argv):
             afl = {
                 'creation_time': str(datetime.datetime.now()),
                 'firmware': args.firmware,
+                'firmware_label': os.path.basename(args.firmware),
                 'seed': seedfilename,
             }
             render_template(afl, "launch-AFL-template.sh", os.path.join(output_dir, "launch-AFL.sh"), executable=True)
